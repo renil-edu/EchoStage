@@ -1,89 +1,91 @@
-# import cv2
-# from deepface import DeepFace
-
-# # Load the pre-trained emotion detection model
-# model = DeepFace.build_model("Emotion")
-
-# # Define emotion labels
-# emotion_labels = ['angry', 'disgust', 'fear', 'happy', 'sad', 'surprise', 'neutral']
-
-# # Load Haar cascade classifier
-# face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-
-# # Start webcam
-# cap = cv2.VideoCapture(0)
-
-# print("Press 'q' to exit the window")
-
-# while True:
-#     ret, frame = cap.read()
-#     if not ret:
-#         break
-
-#     # Convert each frame to grayscale
-#     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-#     # Detect faces
-#     faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1,
-#                                           minNeighbors=5, minSize=(30, 30))
-
-#     for (x, y, w, h) in faces:
-#         face_roi = gray[y:y+h, x:x+w]
-#         resized_face = cv2.resize(face_roi, (48, 48))
-#         normalized_face = resized_face / 255.0
-#         reshaped_face = normalized_face.reshape(1, 48, 48, 1)
-
-#         # Predict emotion
-#         preds = model.predict(reshaped_face)[0]
-#         emotion = emotion_labels[preds.argmax()]
-
-#         # Draw detection box and label
-#         cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
-#         cv2.putText(frame, emotion, (x, y - 10),
-#                     cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 0, 0), 2)
-
-#     cv2.imshow('Emotion Recognition', frame)
-
-#     # Quit on 'q'
-#     if cv2.waitKey(1) & 0xFF == ord('q'):
-#         break
-
-# cap.release()
-# cv2.destroyAllWindows()
-
-
-
-
 import cv2
+import json
+import time
+from collections import defaultdict, Counter
 from deepface import DeepFace
 
-# Initialize webcam capture
 cap = cv2.VideoCapture(0)
+print("Press 'a' to start scene, 's' to stop and save scene, 'q' to quit")
 
-print("Press 'q' to quit")
+scene_count = 0
+current_scene_data = []
+scene_active = False
+scene_start_time = None
+
+def aggregate_scene_data(scene_data, start_time):
+    per_second_emotions = defaultdict(list)
+    for timestamp, emotions, dominant_emotion in scene_data:
+        second = int(timestamp - start_time)
+        per_second_emotions[second].append(dominant_emotion)
+
+    per_second_summary = []
+    for sec in sorted(per_second_emotions):
+        dom_em = Counter(per_second_emotions[sec]).most_common(1)[0][0]
+        per_second_summary.append({"time": sec, "dominant_emotion": dom_em})
+
+    count = len(scene_data)
+    summed_emotions = defaultdict(float)
+    if count == 0:
+        average_emotions = {}
+    else:
+        for _, emotions, _ in scene_data:
+            for emo, score in emotions.items():
+                summed_emotions[emo] += score
+        average_emotions = {emo: summed_emotions[emo] / count for emo in summed_emotions}
+
+    return average_emotions, per_second_summary
+
+def save_scene(scene_num, avg_emotions, per_sec_emotions):
+    scene_dict = {
+        f"scene_{scene_num}": {
+            "average_emotions": avg_emotions,
+            "per_second_emotions": per_sec_emotions
+        }
+    }
+    filename = f"scene_{scene_num}.json"
+    with open(filename, "w") as f:
+        json.dump(scene_dict, f, indent=4)
+    print(f"[INFO] Saved scene {scene_num} data to {filename}")
 
 while True:
     ret, frame = cap.read()
     if not ret:
         break
 
-    # Analyze emotions in the current frame
-    result = DeepFace.analyze(frame, actions=['emotion'], enforce_detection=False)
+    if scene_active:
+        result = DeepFace.analyze(frame, actions=['emotion'], enforce_detection=False)
+        emotions = result[0]["emotion"]
+        dominant_emotion = result[0]["dominant_emotion"]
+        current_time = time.time()
+        current_scene_data.append((current_time, emotions, dominant_emotion))
+        cv2.putText(frame, dominant_emotion, (50, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+    else:
+        cv2.putText(frame, "Press 'a' to start scene", (50, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
 
-    # Extract dominant emotion of the first detected face
-    emotion = result[0]['dominant_emotion']
+    cv2.imshow("Emotion Detector", frame)
 
-    # Display detected emotion on the frame
-    cv2.putText(frame, emotion, (50, 50),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
-
-    # Show the video frame with emotion label
-    cv2.imshow('Emotion Detector', frame)
-
-    # Exit loop if 'q' key is pressed
-    if cv2.waitKey(1) & 0xFF == ord('q'):
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord('q'):
         break
+    elif key == ord('a'):
+        if not scene_active:
+            scene_active = True
+            scene_start_time = time.time()
+            current_scene_data = []
+            scene_count += 1
+            print(f"[INFO] Scene {scene_count} started")
+        else:
+            print("[WARN] Scene already active, press 's' to stop it first")
+    elif key == ord('s'):
+        if scene_active:
+            scene_active = False
+            avg_emotions, per_sec_emotions = aggregate_scene_data(current_scene_data, scene_start_time)
+            save_scene(scene_count, avg_emotions, per_sec_emotions)
+            current_scene_data = []
+        else:
+            print("[WARN] No active scene to stop")
 
-# Release webcam and close window
 cap.release()
 cv2.destroyAllWindows()
